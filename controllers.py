@@ -398,11 +398,19 @@ class ControllerOptimalPredictive:
                  
     def run_obj(self, observation, action):
         """
+        Quadratic running cost: [obs, act]^T * R1 * [obs, act]
+        """
+        chi = np.concatenate([observation, action])
+        R1 = self.run_obj_pars[0]
+        return chi.T @ R1 @ chi
+
+
+        """
         Running (equivalently, instantaneous or stage) objective. Depending on the context, it is also called utility, reward, running cost etc.
         
         See class documentation.
         """
-        run_obj = 1
+        run_obj=1
         #####################################################################################################
         ################################# write down here cost-function #####################################
         #####################################################################################################
@@ -518,6 +526,8 @@ class ControllerOptimalPredictive:
         return action_sqn[:self.dim_input]    # Return first action
                     
     def compute_action(self, t, observation):
+        print(f"[MPC] t = {t:.2f}, observation = {observation}, action = {self.action_curr}")
+
         """
         Main method. See class documentation.
         
@@ -549,13 +559,120 @@ class ControllerOptimalPredictive:
         else:
             return self.action_curr
 
+#/////////////////////////////////////////////////
 class N_CTRL:
+    def __init__(self):
+        # Use default gains or pass custom ones
+        self.controller = NominalController(k_rho=3.0, k_alpha=10.0, k_beta=-2.0)
 
-        #####################################################################################################
-        ########################## write down here nominal controller class #################################
-        #####################################################################################################
+    def pure_loop(self, observation):
+        # Convert observation into (state, reference) if needed
+        # For now we assume it's already in [state, reference] format
+        state = observation[0]
+        reference = observation[1]
+        return self.controller.compute_control(state, reference)
 
-        return [v,w]
+class NominalController:
+    def __init__(self, k_rho=1.0, k_alpha=4.0, k_beta=-1.0):
+        self.k_rho = k_rho
+        self.k_alpha = k_alpha
+        self.k_beta = k_beta
+
+    def compute_control(self, state, reference):
+        x, y, theta = state
+        x_ref, y_ref, theta_ref = reference
+
+        dx = x_ref - x
+        dy = y_ref - y
+
+        rho = np.sqrt(dx**2 + dy**2)
+        alpha = np.arctan2(dy, dx) - theta
+        beta = theta_ref - theta - alpha
+
+        # Normalize angles
+        alpha = (alpha + np.pi) % (2 * np.pi) - np.pi
+        beta = (beta + np.pi) % (2 * np.pi) - np.pi
+
+        v = self.k_rho * rho
+        w = self.k_alpha * alpha + self.k_beta * beta
+
+        return [v, w]
+
+       
+import numpy as np
+from scipy.linalg import solve_discrete_are
+
+class LQRController:
+    def __init__(self, A, B, Q, R):
+        """
+        A, B: Discrete-time system matrices
+        Q, R: Cost matrices for state and input
+        """
+        self.K = self.compute_lqr_gain(A, B, Q, R)
+
+    def compute_lqr_gain(self, A, B, Q, R):
+        """Solve Discrete Algebraic Riccati Equation to get LQR gain."""
+        P = solve_discrete_are(A, B, Q, R)
+        K = np.linalg.inv(B.T @ P @ B + R) @ (B.T @ P @ A)
+        return K
+
+    def compute_control(self, state, reference):
+        """
+        Apply control: u = -K * (x - x_ref)
+        """
+        x = np.array(state)
+        x_ref = np.array(reference)
+        return -self.K @ (x - x_ref)
+
+        import numpy as np
+from scipy.optimize import minimize
+
+class MPCController:
+    def __init__(self, sys_rhs, sys_out, state_dim, input_dim, ctrl_bnds, horizon, dt, Q, R, goal):
+        self.sys_rhs = sys_rhs
+        self.sys_out = sys_out
+        self.nx = state_dim
+        self.nu = input_dim
+        self.N = horizon
+        self.dt = dt
+        self.Q = Q
+        self.R = R
+        self.goal = goal
+        self.ctrl_bnds = ctrl_bnds
+        self.u_init = np.zeros((self.N, self.nu))
+
+    def compute_control(self, x0):
+        def predict_cost(u_flat):
+            u_seq = u_flat.reshape(self.N, self.nu)
+            x = np.copy(x0)
+            total_cost = 0.0
+            for i in range(self.N):
+                u = u_seq[i]
+                x = x + self.dt * self.sys_rhs(0, x, u)
+                err = x - self.goal
+                total_cost += err.T @ self.Q @ err + u.T @ self.R @ u
+            return total_cost
+
+        bounds = []
+        for _ in range(self.N):
+            for i in range(self.nu):
+                bounds.append((self.ctrl_bnds[i, 0], self.ctrl_bnds[i, 1]))
+
+        result = minimize(
+            predict_cost,
+            self.u_init.flatten(),
+            method='SLSQP',
+            bounds=bounds,
+            options={'maxiter': 60, 'ftol': 1e-3, 'disp': False}
+        )
+
+        if result.success:
+            u_opt = result.x.reshape(self.N, self.nu)
+            self.u_init = u_opt
+            return u_opt[0]
+        else:
+            print("[MPC] Optimization failed, using previous or zero input")
+            return self.u_init[0] if self.u_init is not None else np.zeros(self.nu)
 
 
 

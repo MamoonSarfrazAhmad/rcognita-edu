@@ -296,3 +296,33 @@ class Sys3WRobotNI(System):
         observation = state
         return observation
 
+class SysUnicycle(System):
+    """
+    System class: Unicycle model for differential-drive robot.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = 'unicycle'
+
+    def _state_dyn(self, t, state, action, disturb=[]):
+        """
+        Unicycle model dynamics.
+        state: [x, y, theta]
+        action: [v, omega]
+        """
+        x, y, theta = state
+        v, omega = action
+
+        dx = v * np.cos(theta)
+        dy = v * np.sin(theta)
+        dtheta = omega
+
+        Dstate = np.array([dx, dy, dtheta])
+        return Dstate
+
+    def out(self, state, action=[]):
+        """
+        Output equals state by default.
+        """
+        return state
